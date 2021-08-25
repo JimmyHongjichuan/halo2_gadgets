@@ -22,6 +22,8 @@ pub(super) mod mul;
 pub(super) mod mul_fixed;
 pub(super) mod witness_point;
 
+pub use mul_fixed::{compute_lagrange_coeffs, compute_window_table, find_zs_and_us};
+
 /// Window size for fixed-base scalar multiplication
 pub const FIXED_BASE_WINDOW_SIZE: usize = 3;
 
@@ -330,13 +332,6 @@ pub struct EccScalarFixedShort {
 struct EccBaseFieldElemFixed {
     base_field_elem: AssignedCell<pallas::Base, pallas::Base>,
     running_sum: ArrayVec<AssignedCell<pallas::Base, pallas::Base>, { NUM_WINDOWS + 1 }>,
-}
-
-impl EccBaseFieldElemFixed {
-    #[cfg(test)]
-    fn base_field_elem(&self) -> AssignedCell<pallas::Base, pallas::Base> {
-        self.base_field_elem.clone()
-    }
 }
 
 impl<Fixed: FixedPoints<pallas::Affine>> EccInstructions<pallas::Affine> for EccChip<Fixed>

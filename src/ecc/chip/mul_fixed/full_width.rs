@@ -176,82 +176,49 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
 
 #[cfg(test)]
 pub mod tests {
-    use group::{ff::Field, Curve};
+    use group::ff::Field;
     use halo2::{circuit::Layouter, plonk::Error};
     use pasta_curves::pallas;
     use rand::rngs::OsRng;
 
-    use crate::constants::{OrchardFixedBases, OrchardFixedBasesFull};
+    use super::super::tests::constrain_equal_non_id;
     use crate::ecc::{
         chip::{EccChip, FixedPoint as FixedPointTrait, H},
-        FixedPoint, NonIdentityPoint, Point,
+        FixedPoint, FixedPoints,
     };
 
-    pub fn test_mul_fixed(
-        chip: EccChip<OrchardFixedBases>,
+    pub fn test_mul_fixed<F: FixedPoints<pallas::Affine>>(
+        base: <F as FixedPoints<pallas::Affine>>::FullScalar,
+        chip: EccChip<F>,
         mut layouter: impl Layouter<pallas::Base>,
-    ) -> Result<(), Error> {
-        // commit_ivk_r
-        let commit_ivk_r = OrchardFixedBasesFull::CommitIvkR;
+    ) -> Result<(), Error>
+    where
+        <F as FixedPoints<pallas::Affine>>::Base: FixedPointTrait<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::FullScalar: FixedPointTrait<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::ShortScalar: FixedPointTrait<pallas::Affine>,
+    {
         test_single_base(
             chip.clone(),
-            layouter.namespace(|| "commit_ivk_r"),
-            FixedPoint::from_inner(chip.clone(), commit_ivk_r),
-            commit_ivk_r.generator(),
-        )?;
-
-        // note_commit_r
-        let note_commit_r = OrchardFixedBasesFull::NoteCommitR;
-        test_single_base(
-            chip.clone(),
-            layouter.namespace(|| "note_commit_r"),
-            FixedPoint::from_inner(chip.clone(), note_commit_r),
-            note_commit_r.generator(),
-        )?;
-
-        // value_commit_r
-        let value_commit_r = OrchardFixedBasesFull::ValueCommitR;
-        test_single_base(
-            chip.clone(),
-            layouter.namespace(|| "value_commit_r"),
-            FixedPoint::from_inner(chip.clone(), value_commit_r),
-            value_commit_r.generator(),
-        )?;
-
-        // spend_auth_g
-        let spend_auth_g = OrchardFixedBasesFull::SpendAuthG;
-        test_single_base(
-            chip.clone(),
-            layouter.namespace(|| "spend_auth_g"),
-            FixedPoint::from_inner(chip, spend_auth_g),
-            spend_auth_g.generator(),
+            layouter.namespace(|| "fixed base"),
+            FixedPoint::from_inner(chip, base.clone()),
+            base.generator(),
         )?;
 
         Ok(())
     }
 
     #[allow(clippy::op_ref)]
-    fn test_single_base(
-        chip: EccChip<OrchardFixedBases>,
+    fn test_single_base<F: FixedPoints<pallas::Affine>>(
+        chip: EccChip<F>,
         mut layouter: impl Layouter<pallas::Base>,
-        base: FixedPoint<pallas::Affine, EccChip<OrchardFixedBases>>,
+        base: FixedPoint<pallas::Affine, EccChip<F>>,
         base_val: pallas::Affine,
-    ) -> Result<(), Error> {
-        fn constrain_equal_non_id(
-            chip: EccChip<OrchardFixedBases>,
-            mut layouter: impl Layouter<pallas::Base>,
-            base_val: pallas::Affine,
-            scalar_val: pallas::Scalar,
-            result: Point<pallas::Affine, EccChip<OrchardFixedBases>>,
-        ) -> Result<(), Error> {
-            let expected = NonIdentityPoint::new(
-                chip,
-                layouter.namespace(|| "expected point"),
-                Some((base_val * scalar_val).to_affine()),
-            )?;
-            result.constrain_equal(layouter.namespace(|| "constrain result"), &expected)
-        }
-
+    ) -> Result<(), Error>
+    where
+        <F as FixedPoints<pallas::Affine>>::Base: FixedPointTrait<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::FullScalar: FixedPointTrait<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::ShortScalar: FixedPointTrait<pallas::Affine>,
+    {
         // [a]B
         {
             let scalar_fixed = pallas::Scalar::random(OsRng);

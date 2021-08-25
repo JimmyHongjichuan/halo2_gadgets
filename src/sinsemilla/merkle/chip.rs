@@ -6,7 +6,6 @@ use halo2::{
 use pasta_curves::{arithmetic::FieldExt, pallas};
 
 use super::{MerkleInstructions, MERKLE_DEPTH};
-
 use crate::{
     primitives::sinsemilla,
     {
@@ -345,9 +344,8 @@ where
         // Check layer hash output against Sinsemilla primitives hash
         #[cfg(test)]
         {
-            use super::MERKLE_CRH_PERSONALIZATION;
-            use crate::{primitives::sinsemilla::HashDomain, spec::i2lebsp};
-            use group::ff::PrimeFieldBits;
+            use crate::{primitives::sinsemilla::HashDomain, sinsemilla::merkle::i2lebsp};
+            use group::{ff::PrimeFieldBits, prime::PrimeCurveAffine};
 
             if let (Some(left), Some(right)) = (left.value(), right.value()) {
                 let l = i2lebsp::<10>(l as u64);
@@ -363,7 +361,7 @@ where
                     .by_val()
                     .take(pallas::Base::NUM_BITS as usize)
                     .collect();
-                let merkle_crh = HashDomain::new(MERKLE_CRH_PERSONALIZATION);
+                let merkle_crh = HashDomain { Q: Q.to_curve() };
 
                 let mut message = l.to_vec();
                 message.extend_from_slice(&left);

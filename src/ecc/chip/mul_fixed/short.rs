@@ -229,35 +229,39 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
 
 #[cfg(test)]
 pub mod tests {
-    use group::{ff::PrimeField, Curve};
+    use group::ff::PrimeField;
     use halo2::{
         arithmetic::CurveAffine,
         circuit::{AssignedCell, Chip, Layouter},
-        plonk::{Any, Error},
+        plonk::Error,
     };
     use pasta_curves::{arithmetic::FieldExt, pallas};
 
-    use crate::constants::OrchardFixedBases;
-    use crate::constants::{OrchardFixedBases, ValueCommitV};
+    use super::super::tests::constrain_equal_non_id;
     use crate::{
         ecc::{
-            chip::{EccChip, FixedPoint, MagnitudeSign},
-            FixedPointShort, NonIdentityPoint, Point,
+            chip::{EccChip, FixedPoint, FixedPoints, MagnitudeSign},
+            FixedPointShort,
         },
-        utilities::{lookup_range_check::LookupRangeCheckConfig, UtilitiesInstructions},
+        utilities::UtilitiesInstructions,
     };
 
     #[allow(clippy::op_ref)]
-    pub fn test_mul_fixed_short(
-        chip: EccChip<OrchardFixedBases>,
+    pub fn test_mul_fixed_short<F: FixedPoints<pallas::Affine>>(
+        base: <F as FixedPoints<pallas::Affine>>::ShortScalar,
+        chip: EccChip<F>,
         mut layouter: impl Layouter<pallas::Base>,
-    ) -> Result<(), Error> {
-        // value_commit_v
-        let base_val = ValueCommitV.generator();
-        let value_commit_v = FixedPointShort::from_inner(chip.clone(), ValueCommitV);
+    ) -> Result<(), Error>
+    where
+        <F as FixedPoints<pallas::Affine>>::Base: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::FullScalar: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::ShortScalar: FixedPoint<pallas::Affine>,
+    {
+        let base_val = base.generator();
+        let base = FixedPointShort::from_inner(chip.clone(), base);
 
-        fn load_magnitude_sign(
-            chip: EccChip<OrchardFixedBases>,
+        fn load_magnitude_sign<F: FixedPoints<pallas::Affine>>(
+            chip: EccChip<F>,
             mut layouter: impl Layouter<pallas::Base>,
             magnitude: pallas::Base,
             sign: pallas::Base,
@@ -268,21 +272,6 @@ pub mod tests {
             let sign = chip.load_private(layouter.namespace(|| "sign"), column, Some(sign))?;
 
             Ok((magnitude, sign))
-        }
-
-        fn constrain_equal_non_id(
-            chip: EccChip<OrchardFixedBases>,
-            mut layouter: impl Layouter<pallas::Base>,
-            base_val: pallas::Affine,
-            scalar_val: pallas::Scalar,
-            result: Point<pallas::Affine, EccChip<OrchardFixedBases>>,
-        ) -> Result<(), Error> {
-            let expected = NonIdentityPoint::new(
-                chip,
-                layouter.namespace(|| "expected point"),
-                Some((base_val * scalar_val).to_affine()),
-            )?;
-            result.constrain_equal(layouter.namespace(|| "constrain result"), &expected)
         }
 
         let magnitude_signs = [
@@ -326,7 +315,7 @@ pub mod tests {
                     *magnitude,
                     *sign,
                 )?;
-                value_commit_v.mul(layouter.namespace(|| *name), magnitude_sign)?
+                base.mul(layouter.namespace(|| *name), magnitude_sign)?
             };
             // Move from base field into scalar field
             let scalar = {
@@ -360,7 +349,7 @@ pub mod tests {
                     *magnitude,
                     *sign,
                 )?;
-                value_commit_v.mul(layouter.namespace(|| *name), magnitude_sign)?
+                base.mul(layouter.namespace(|| *name), magnitude_sign)?
             };
             if let Some(is_identity) = result.inner().is_identity() {
                 assert!(is_identity);
@@ -373,14 +362,103 @@ pub mod tests {
     #[test]
     fn invalid_magnitude_sign() {
         use crate::{
-            ecc::chip::{EccConfig, FixedPoint},
-            utilities::UtilitiesInstructions,
+            ecc::{
+                chip::{
+                    compute_lagrange_coeffs, find_zs_and_us, EccConfig, FixedPoint, H, NUM_WINDOWS,
+                    NUM_WINDOWS_SHORT,
+                },
+                FixedPoints,
+            },
+            utilities::lookup_range_check::LookupRangeCheckConfig,
         };
+        use group::{Curve, Group};
         use halo2::{
             circuit::{Layouter, SimpleFloorPlanner},
             dev::{FailureLocation, MockProver, VerifyFailure},
-            plonk::{Circuit, ConstraintSystem, Error},
+            plonk::{Any, Circuit, ConstraintSystem, Error},
         };
+        use lazy_static::lazy_static;
+
+        #[derive(Debug, Eq, PartialEq, Clone)]
+        struct FixedBase;
+        #[derive(Debug, Eq, PartialEq, Clone)]
+        struct FullWidth;
+        #[derive(Debug, Eq, PartialEq, Clone)]
+        struct BaseField;
+        #[derive(Debug, Eq, PartialEq, Clone)]
+        struct Short;
+
+        lazy_static! {
+            static ref BASE: pallas::Affine = pallas::Point::generator().to_affine();
+            static ref ZS_AND_US: Vec<(u64, [[u8; 32]; H])> =
+                find_zs_and_us(*BASE, NUM_WINDOWS).unwrap();
+            static ref ZS_AND_US_SHORT: Vec<(u64, [[u8; 32]; H])> =
+                find_zs_and_us(*BASE, NUM_WINDOWS_SHORT).unwrap();
+            static ref LAGRANGE_COEFFS: Vec<[pallas::Base; H]> =
+                compute_lagrange_coeffs(*BASE, NUM_WINDOWS);
+            static ref LAGRANGE_COEFFS_SHORT: Vec<[pallas::Base; H]> =
+                compute_lagrange_coeffs(*BASE, NUM_WINDOWS_SHORT);
+        }
+
+        impl FixedPoint<pallas::Affine> for FullWidth {
+            fn generator(&self) -> pallas::Affine {
+                *BASE
+            }
+
+            fn u(&self) -> Vec<[[u8; 32]; H]> {
+                ZS_AND_US.iter().map(|(_, us)| *us).collect()
+            }
+
+            fn z(&self) -> Vec<u64> {
+                ZS_AND_US.iter().map(|(z, _)| *z).collect()
+            }
+
+            fn lagrange_coeffs(&self) -> Vec<[pallas::Base; H]> {
+                LAGRANGE_COEFFS.to_vec()
+            }
+        }
+
+        impl FixedPoint<pallas::Affine> for BaseField {
+            fn generator(&self) -> pallas::Affine {
+                *BASE
+            }
+
+            fn u(&self) -> Vec<[[u8; 32]; H]> {
+                ZS_AND_US.iter().map(|(_, us)| *us).collect()
+            }
+
+            fn z(&self) -> Vec<u64> {
+                ZS_AND_US.iter().map(|(z, _)| *z).collect()
+            }
+
+            fn lagrange_coeffs(&self) -> Vec<[pallas::Base; H]> {
+                LAGRANGE_COEFFS.to_vec()
+            }
+        }
+
+        impl FixedPoint<pallas::Affine> for Short {
+            fn generator(&self) -> pallas::Affine {
+                *BASE
+            }
+
+            fn u(&self) -> Vec<[[u8; 32]; H]> {
+                ZS_AND_US_SHORT.iter().map(|(_, us)| *us).collect()
+            }
+
+            fn z(&self) -> Vec<u64> {
+                ZS_AND_US_SHORT.iter().map(|(z, _)| *z).collect()
+            }
+
+            fn lagrange_coeffs(&self) -> Vec<[pallas::Base; H]> {
+                LAGRANGE_COEFFS_SHORT.to_vec()
+            }
+        }
+
+        impl FixedPoints<pallas::Affine> for FixedBase {
+            type FullScalar = FullWidth;
+            type ShortScalar = Short;
+            type Base = BaseField;
+        }
 
         #[derive(Default)]
         struct MyCircuit {
@@ -395,7 +473,7 @@ pub mod tests {
         }
 
         impl Circuit<pallas::Base> for MyCircuit {
-            type Config = EccConfig<OrchardFixedBases>;
+            type Config = EccConfig<FixedBase>;
             type FloorPlanner = SimpleFloorPlanner;
 
             fn without_witnesses(&self) -> Self {
@@ -432,7 +510,7 @@ pub mod tests {
                 meta.enable_constant(constants);
 
                 let range_check = LookupRangeCheckConfig::configure(meta, advices[9], lookup_table);
-                EccChip::<OrchardFixedBases>::configure(meta, advices, lagrange_coeffs, range_check)
+                EccChip::<FixedBase>::configure(meta, advices, lagrange_coeffs, range_check)
             }
 
             fn synthesize(
@@ -454,7 +532,7 @@ pub mod tests {
                     (magnitude, sign)
                 };
 
-                short_config.assign(layouter, magnitude_sign, &ValueCommitV)?;
+                short_config.assign(layouter, magnitude_sign, &Short)?;
 
                 Ok(())
             }
@@ -568,7 +646,7 @@ pub mod tests {
             };
 
             let negation_check_y = {
-                *(ValueCommitV.generator() * pallas::Scalar::from(magnitude_u64))
+                *(Short.generator() * pallas::Scalar::from(magnitude_u64))
                     .to_affine()
                     .coordinates()
                     .unwrap()

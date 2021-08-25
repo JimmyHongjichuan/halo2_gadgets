@@ -305,7 +305,7 @@ where
 
 /// Trait allowing circuit's Sinsemilla CommitDomains to be enumerated.
 pub trait CommitDomains<C: CurveAffine, F: FixedPoints<C>, H: HashDomains<C>>:
-    Clone + Debug
+    Clone + Debug + Eq
 {
     /// Returns the fixed point corresponding to the R constant used for
     /// randomization in this CommitDomain.
@@ -317,7 +317,7 @@ pub trait CommitDomains<C: CurveAffine, F: FixedPoints<C>, H: HashDomains<C>>:
 
 /// Trait allowing circuit's Sinsemilla HashDomains to be enumerated.
 #[allow(non_snake_case)]
-pub trait HashDomains<C: CurveAffine>: Clone + Debug {
+pub trait HashDomains<C: CurveAffine>: Clone + Debug + Eq {
     fn Q(&self) -> C;
 }
 
@@ -407,50 +407,152 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use halo2::{
-        circuit::{Layouter, SimpleFloorPlanner},
-        dev::MockProver,
-        plonk::{Circuit, ConstraintSystem, Error},
-    };
-    use rand::rngs::OsRng;
-
-    use super::{
-        chip::{SinsemillaChip, SinsemillaConfig},
-        CommitDomain, HashDomain, Message, MessagePiece,
-    };
-
+pub mod tests {
     use crate::{
-        constants::{
-            fixed_bases::COMMIT_IVK_PERSONALIZATION, sinsemilla::MERKLE_CRH_PERSONALIZATION,
-            OrchardCommitDomains, OrchardFixedBases, OrchardHashDomains,
-        },
         ecc::{
-            chip::{EccChip, EccConfig},
-            NonIdentityPoint,
+            chip::{
+                compute_lagrange_coeffs, find_zs_and_us, EccChip, EccConfig, FixedPoint, H,
+                NUM_WINDOWS, NUM_WINDOWS_SHORT,
+            },
+            FixedPoints, NonIdentityPoint,
         },
-        primitives::sinsemilla::{self, K},
+        primitives::sinsemilla,
+        sinsemilla::{
+            chip::{SinsemillaChip, SinsemillaConfig},
+            CommitDomain, CommitDomains, HashDomain, HashDomains, Message,
+        },
         utilities::lookup_range_check::LookupRangeCheckConfig,
     };
 
-    use group::{ff::Field, Curve};
+    use halo2::{
+        circuit::{Layouter, SimpleFloorPlanner},
+        plonk::{Circuit, ConstraintSystem, Error},
+    };
     use pasta_curves::pallas;
 
+    use group::{ff::Field, prime::PrimeCurveAffine, Curve};
+    use rand::rngs::OsRng;
     use std::convert::TryInto;
 
-    struct MyCircuit {}
+    use lazy_static::lazy_static;
+
+    lazy_static! {
+        static ref PERSONALIZATION: &'static str = "personalization";
+        static ref COMMIT_DOMAIN: sinsemilla::CommitDomain =
+            sinsemilla::CommitDomain::new(*PERSONALIZATION);
+        static ref Q: pallas::Affine = COMMIT_DOMAIN.Q().to_affine();
+        static ref R: pallas::Affine = COMMIT_DOMAIN.R().to_affine();
+        static ref ZS_AND_US: Vec<(u64, [[u8; 32]; H])> = find_zs_and_us(*R, NUM_WINDOWS).unwrap();
+        static ref ZS_AND_US_SHORT: Vec<(u64, [[u8; 32]; H])> =
+            find_zs_and_us(*R, NUM_WINDOWS_SHORT).unwrap();
+        static ref LAGRANGE_COEFFS: Vec<[pallas::Base; H]> =
+            compute_lagrange_coeffs(*R, NUM_WINDOWS);
+        static ref LAGRANGE_COEFFS_SHORT: Vec<[pallas::Base; H]> =
+            compute_lagrange_coeffs(*R, NUM_WINDOWS_SHORT);
+    }
+
+    #[derive(Debug, Eq, PartialEq, Clone)]
+    pub struct FixedBase;
+    #[derive(Debug, Eq, PartialEq, Clone)]
+    pub struct FullWidth;
+    #[derive(Debug, Eq, PartialEq, Clone)]
+    pub struct BaseField;
+    #[derive(Debug, Eq, PartialEq, Clone)]
+    pub struct Short;
+
+    impl FixedPoint<pallas::Affine> for FullWidth {
+        fn generator(&self) -> pallas::Affine {
+            *R
+        }
+
+        fn u(&self) -> Vec<[[u8; 32]; H]> {
+            ZS_AND_US.iter().map(|(_, us)| *us).collect()
+        }
+
+        fn z(&self) -> Vec<u64> {
+            ZS_AND_US.iter().map(|(z, _)| *z).collect()
+        }
+
+        fn lagrange_coeffs(&self) -> Vec<[pallas::Base; H]> {
+            LAGRANGE_COEFFS.to_vec()
+        }
+    }
+
+    impl FixedPoint<pallas::Affine> for BaseField {
+        fn generator(&self) -> pallas::Affine {
+            *R
+        }
+
+        fn u(&self) -> Vec<[[u8; 32]; H]> {
+            ZS_AND_US.iter().map(|(_, us)| *us).collect()
+        }
+
+        fn z(&self) -> Vec<u64> {
+            ZS_AND_US.iter().map(|(z, _)| *z).collect()
+        }
+
+        fn lagrange_coeffs(&self) -> Vec<[pallas::Base; H]> {
+            LAGRANGE_COEFFS.to_vec()
+        }
+    }
+
+    impl FixedPoint<pallas::Affine> for Short {
+        fn generator(&self) -> pallas::Affine {
+            *R
+        }
+
+        fn u(&self) -> Vec<[[u8; 32]; H]> {
+            ZS_AND_US_SHORT.iter().map(|(_, us)| *us).collect()
+        }
+
+        fn z(&self) -> Vec<u64> {
+            ZS_AND_US_SHORT.iter().map(|(z, _)| *z).collect()
+        }
+
+        fn lagrange_coeffs(&self) -> Vec<[pallas::Base; H]> {
+            LAGRANGE_COEFFS_SHORT.to_vec()
+        }
+    }
+
+    impl FixedPoints<pallas::Affine> for FixedBase {
+        type FullScalar = FullWidth;
+        type ShortScalar = Short;
+        type Base = BaseField;
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    pub struct Hash;
+    impl HashDomains<pallas::Affine> for Hash {
+        fn Q(&self) -> pallas::Affine {
+            *Q
+        }
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    pub struct Commit;
+    impl CommitDomains<pallas::Affine, FixedBase, Hash> for Commit {
+        fn r(&self) -> FullWidth {
+            FullWidth
+        }
+
+        fn hash_domain(&self) -> Hash {
+            Hash
+        }
+    }
+
+    pub struct MyCircuit;
 
     impl Circuit<pallas::Base> for MyCircuit {
         #[allow(clippy::type_complexity)]
         type Config = (
-            EccConfig<OrchardFixedBases>,
-            SinsemillaConfig<OrchardHashDomains, OrchardCommitDomains, OrchardFixedBases>,
-            SinsemillaConfig<OrchardHashDomains, OrchardCommitDomains, OrchardFixedBases>,
+            EccConfig<FixedBase>,
+            SinsemillaConfig<Hash, Commit, FixedBase>,
+            SinsemillaConfig<Hash, Commit, FixedBase>,
         );
         type FloorPlanner = SimpleFloorPlanner;
 
         fn without_witnesses(&self) -> Self {
-            MyCircuit {}
+            MyCircuit
         }
 
         #[allow(non_snake_case)]
@@ -493,12 +595,8 @@ mod tests {
 
             let range_check = LookupRangeCheckConfig::configure(meta, advices[9], table_idx);
 
-            let ecc_config = EccChip::<OrchardFixedBases>::configure(
-                meta,
-                advices,
-                lagrange_coeffs,
-                range_check,
-            );
+            let ecc_config =
+                EccChip::<FixedBase>::configure(meta, advices, lagrange_coeffs, range_check);
 
             let config1 = SinsemillaChip::configure(
                 meta,
@@ -529,65 +627,34 @@ mod tests {
             let ecc_chip = EccChip::construct(config.0);
 
             // The two `SinsemillaChip`s share the same lookup table.
-            SinsemillaChip::<OrchardHashDomains, OrchardCommitDomains, OrchardFixedBases>::load(
-                config.1.clone(),
-                &mut layouter,
-            )?;
+            SinsemillaChip::<Hash, Commit, FixedBase>::load(config.1.clone(), &mut layouter)?;
 
-            // This MerkleCRH example is purely for illustrative purposes.
-            // It is not an implementation of the Orchard protocol spec.
+            // Test hash domain.
             {
-                let chip1 = SinsemillaChip::construct(config.1);
+                let chip1 = SinsemillaChip::construct(config.1.clone());
 
-                let merkle_crh = HashDomain::new(
-                    chip1.clone(),
-                    ecc_chip.clone(),
-                    &OrchardHashDomains::MerkleCrh,
-                );
+                let hash_domain = HashDomain::new(chip1.clone(), ecc_chip.clone(), &Hash);
 
-                // Layer 31, l = MERKLE_DEPTH - 1 - layer = 0
-                let l_bitstring = vec![Some(false); K];
-                let l = MessagePiece::from_bitstring(
-                    chip1.clone(),
-                    layouter.namespace(|| "l"),
-                    &l_bitstring,
-                )?;
+                let message: Vec<Option<bool>> =
+                    (0..500).map(|_| Some(rand::random::<bool>())).collect();
 
-                // Left leaf
-                let left_bitstring: Vec<Option<bool>> =
-                    (0..250).map(|_| Some(rand::random::<bool>())).collect();
-                let left = MessagePiece::from_bitstring(
-                    chip1.clone(),
-                    layouter.namespace(|| "left"),
-                    &left_bitstring,
-                )?;
+                let (result, _) = {
+                    let message = Message::from_bitstring(
+                        chip1,
+                        layouter.namespace(|| "witness message"),
+                        message.clone(),
+                    )?;
+                    hash_domain.hash_to_point(layouter.namespace(|| "hash"), message)?
+                };
 
-                // Right leaf
-                let right_bitstring: Vec<Option<bool>> =
-                    (0..250).map(|_| Some(rand::random::<bool>())).collect();
-                let right = MessagePiece::from_bitstring(
-                    chip1.clone(),
-                    layouter.namespace(|| "right"),
-                    &right_bitstring,
-                )?;
-
-                let l_bitstring: Option<Vec<bool>> = l_bitstring.into_iter().collect();
-                let left_bitstring: Option<Vec<bool>> = left_bitstring.into_iter().collect();
-                let right_bitstring: Option<Vec<bool>> = right_bitstring.into_iter().collect();
-
-                // Witness expected parent
-                let expected_parent = {
-                    let expected_parent = if let (Some(l), Some(left), Some(right)) =
-                        (l_bitstring, left_bitstring, right_bitstring)
-                    {
-                        let merkle_crh = sinsemilla::HashDomain::new(MERKLE_CRH_PERSONALIZATION);
-                        let point = merkle_crh
-                            .hash_to_point(
-                                l.into_iter()
-                                    .chain(left.into_iter())
-                                    .chain(right.into_iter()),
-                            )
-                            .unwrap();
+                let expected_result = {
+                    let message: Option<Vec<bool>> = message.into_iter().collect();
+                    let expected_result = if let Some(message) = message {
+                        let point = sinsemilla::HashDomain {
+                            Q: hash_domain.Q.to_curve(),
+                        }
+                        .hash_to_point(message.into_iter())
+                        .unwrap();
                         Some(point.to_affine())
                     } else {
                         None
@@ -595,31 +662,24 @@ mod tests {
 
                     NonIdentityPoint::new(
                         ecc_chip.clone(),
-                        layouter.namespace(|| "Witness expected parent"),
-                        expected_parent,
+                        layouter.namespace(|| "Witness expected result"),
+                        expected_result,
                     )?
                 };
 
-                // Parent
-                let (parent, _) = {
-                    let message = Message::from_pieces(chip1, vec![l, left, right]);
-                    merkle_crh.hash_to_point(layouter.namespace(|| "parent"), message)?
-                };
-
-                parent.constrain_equal(
-                    layouter.namespace(|| "parent == expected parent"),
-                    &expected_parent,
+                result.constrain_equal(
+                    layouter.namespace(|| "result == expected result"),
+                    &expected_result,
                 )?;
             }
 
+            // Test commit domain.
             {
                 let chip2 = SinsemillaChip::construct(config.2);
 
-                let commit_ivk = CommitDomain::new(
-                    chip2.clone(),
-                    ecc_chip.clone(),
-                    &OrchardCommitDomains::CommitIvk,
-                );
+                let domain = Commit;
+                let commit_domain = CommitDomain::new(chip2.clone(), ecc_chip.clone(), &domain);
+
                 let r_val = pallas::Scalar::random(rng);
                 let message: Vec<Option<bool>> =
                     (0..500).map(|_| Some(rand::random::<bool>())).collect();
@@ -630,15 +690,21 @@ mod tests {
                         layouter.namespace(|| "witness message"),
                         message.clone(),
                     )?;
-                    commit_ivk.commit(layouter.namespace(|| "commit"), message, Some(r_val))?
+                    commit_domain.commit(layouter.namespace(|| "commit"), message, Some(r_val))?
                 };
 
                 // Witness expected result.
                 let expected_result = {
                     let message: Option<Vec<bool>> = message.into_iter().collect();
                     let expected_result = if let Some(message) = message {
-                        let domain = sinsemilla::CommitDomain::new(COMMIT_IVK_PERSONALIZATION);
-                        let point = domain.commit(message.into_iter(), &r_val).unwrap();
+                        let point = sinsemilla::CommitDomain {
+                            M: sinsemilla::HashDomain {
+                                Q: domain.hash_domain().Q().to_curve(),
+                            },
+                            R: domain.r().generator().to_curve(),
+                        }
+                        .commit(message.into_iter(), &r_val)
+                        .unwrap();
                         Some(point.to_affine())
                     } else {
                         None
@@ -654,15 +720,19 @@ mod tests {
                 result.constrain_equal(
                     layouter.namespace(|| "result == expected result"),
                     &expected_result,
-                )
+                )?;
             }
+
+            Ok(())
         }
     }
 
     #[test]
     fn sinsemilla_chip() {
+        use halo2::dev::MockProver;
+
         let k = 11;
-        let circuit = MyCircuit {};
+        let circuit = MyCircuit;
         let prover = MockProver::run(k, &circuit, vec![]).unwrap();
         assert_eq!(prover.verify(), Ok(()))
     }
@@ -677,7 +747,7 @@ mod tests {
         root.fill(&WHITE).unwrap();
         let root = root.titled("SinsemillaHash", ("sans-serif", 60)).unwrap();
 
-        let circuit = MyCircuit {};
+        let circuit = MyCircuit;
         halo2::dev::CircuitLayout::default()
             .render(11, &circuit, &root)
             .unwrap();

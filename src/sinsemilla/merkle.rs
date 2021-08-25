@@ -13,10 +13,7 @@ use std::iter;
 
 pub mod chip;
 
-/// SWU hash-to-curve personalization for the Merkle CRH generator
-pub const MERKLE_CRH_PERSONALIZATION: &str = "z.cash:Orchard-MerkleCRH";
-
-/// Depth of Merkle tree
+/// Depth of the Merkle tree.
 pub(crate) const MERKLE_DEPTH: usize = 32;
 
 /// Instructions to check the validity of a Merkle path of a given `PATH_LENGTH`.
@@ -136,46 +133,214 @@ where
 pub mod tests {
     use super::{
         chip::{MerkleChip, MerkleConfig},
-        MerklePath, MERKLE_DEPTH,
+        i2lebsp, MerklePath, MERKLE_DEPTH,
     };
 
     use crate::{
-        constants::{OrchardCommitDomains, OrchardFixedBases, OrchardHashDomains},
-        note::commitment::ExtractedNoteCommitment,
-        tree,
-        {
-            sinsemilla::chip::SinsemillaChip,
-            utilities::{lookup_range_check::LookupRangeCheckConfig, UtilitiesInstructions},
+        ecc::{
+            chip::{
+                compute_lagrange_coeffs, find_zs_and_us, FixedPoint, H, NUM_WINDOWS,
+                NUM_WINDOWS_SHORT,
+            },
+            FixedPoints,
         },
+        primitives::sinsemilla,
+        sinsemilla::{chip::SinsemillaChip, CommitDomains, HashDomains},
+        utilities::{lookup_range_check::LookupRangeCheckConfig, UtilitiesInstructions},
     };
 
-    use group::ff::{Field, PrimeField};
+    use group::{
+        ff::{Field, PrimeField},
+        Curve,
+    };
     use halo2::{
         circuit::{Layouter, SimpleFloorPlanner},
-        dev::MockProver,
-        pasta::pallas,
         plonk::{Circuit, ConstraintSystem, Error},
     };
+    use pasta_curves::pallas;
 
     use rand::{rngs::OsRng, RngCore};
     use std::convert::TryInto;
 
-    #[derive(Default)]
-    struct MyCircuit {
-        leaf: Option<pallas::Base>,
-        leaf_pos: Option<u32>,
-        merkle_path: Option<[pallas::Base; MERKLE_DEPTH]>,
+    use lazy_static::lazy_static;
+
+    lazy_static! {
+        static ref PERSONALIZATION: &'static str = "MerkleCRH";
+        static ref HASH_DOMAIN: sinsemilla::HashDomain =
+            sinsemilla::HashDomain::new(*PERSONALIZATION);
+        static ref Q: pallas::Affine = HASH_DOMAIN.Q().to_affine();
+        static ref R: pallas::Affine = sinsemilla::CommitDomain::new(*PERSONALIZATION)
+            .R()
+            .to_affine();
+        static ref ZS_AND_US: Vec<(u64, [[u8; 32]; H])> = find_zs_and_us(*R, NUM_WINDOWS).unwrap();
+        static ref ZS_AND_US_SHORT: Vec<(u64, [[u8; 32]; H])> =
+            find_zs_and_us(*R, NUM_WINDOWS_SHORT).unwrap();
+        static ref LAGRANGE_COEFFS: Vec<[pallas::Base; H]> =
+            compute_lagrange_coeffs(*R, NUM_WINDOWS);
+        static ref LAGRANGE_COEFFS_SHORT: Vec<[pallas::Base; H]> =
+            compute_lagrange_coeffs(*R, NUM_WINDOWS_SHORT);
+    }
+
+    #[derive(Debug, Eq, PartialEq, Clone)]
+    pub struct FixedBase;
+    #[derive(Debug, Eq, PartialEq, Clone)]
+    pub struct FullWidth;
+    #[derive(Debug, Eq, PartialEq, Clone)]
+    pub struct BaseField;
+    #[derive(Debug, Eq, PartialEq, Clone)]
+    pub struct Short;
+
+    impl FixedPoint<pallas::Affine> for FullWidth {
+        fn generator(&self) -> pallas::Affine {
+            *R
+        }
+
+        fn u(&self) -> Vec<[[u8; 32]; H]> {
+            ZS_AND_US.iter().map(|(_, us)| *us).collect()
+        }
+
+        fn z(&self) -> Vec<u64> {
+            ZS_AND_US.iter().map(|(z, _)| *z).collect()
+        }
+
+        fn lagrange_coeffs(&self) -> Vec<[pallas::Base; H]> {
+            LAGRANGE_COEFFS.to_vec()
+        }
+    }
+
+    impl FixedPoint<pallas::Affine> for BaseField {
+        fn generator(&self) -> pallas::Affine {
+            *R
+        }
+
+        fn u(&self) -> Vec<[[u8; 32]; H]> {
+            ZS_AND_US.iter().map(|(_, us)| *us).collect()
+        }
+
+        fn z(&self) -> Vec<u64> {
+            ZS_AND_US.iter().map(|(z, _)| *z).collect()
+        }
+
+        fn lagrange_coeffs(&self) -> Vec<[pallas::Base; H]> {
+            LAGRANGE_COEFFS.to_vec()
+        }
+    }
+
+    impl FixedPoint<pallas::Affine> for Short {
+        fn generator(&self) -> pallas::Affine {
+            *R
+        }
+
+        fn u(&self) -> Vec<[[u8; 32]; H]> {
+            ZS_AND_US_SHORT.iter().map(|(_, us)| *us).collect()
+        }
+
+        fn z(&self) -> Vec<u64> {
+            ZS_AND_US_SHORT.iter().map(|(z, _)| *z).collect()
+        }
+
+        fn lagrange_coeffs(&self) -> Vec<[pallas::Base; H]> {
+            LAGRANGE_COEFFS_SHORT.to_vec()
+        }
+    }
+
+    impl FixedPoints<pallas::Affine> for FixedBase {
+        type FullScalar = FullWidth;
+        type ShortScalar = Short;
+        type Base = BaseField;
+    }
+
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    pub struct Hash;
+    impl HashDomains<pallas::Affine> for Hash {
+        fn Q(&self) -> pallas::Affine {
+            *Q
+        }
+    }
+
+    // This test does not make use of the CommitDomain.
+    #[derive(Debug, Clone, Eq, PartialEq)]
+    pub struct Commit;
+    impl CommitDomains<pallas::Affine, FixedBase, Hash> for Commit {
+        fn r(&self) -> FullWidth {
+            FullWidth
+        }
+
+        fn hash_domain(&self) -> Hash {
+            Hash
+        }
+    }
+
+    fn root(path: [pallas::Base; MERKLE_DEPTH], leaf_pos: u32, leaf: pallas::Base) -> pallas::Base {
+        use ff::PrimeFieldBits;
+        use group::prime::PrimeCurveAffine;
+
+        let domain = sinsemilla::HashDomain {
+            Q: Hash.Q().to_curve(),
+        };
+        let pos_bool = i2lebsp::<32>(leaf_pos as u64);
+
+        // Compute the root
+        let mut node = leaf;
+        for (l, (sibling, pos)) in path.iter().zip(pos_bool.iter()).enumerate() {
+            let (left, right) = if *pos {
+                (*sibling, node)
+            } else {
+                (node, *sibling)
+            };
+
+            let l_star = i2lebsp::<10>(l as u64);
+            let left: Vec<_> = left
+                .to_le_bits()
+                .iter()
+                .by_val()
+                .take(pallas::Base::NUM_BITS as usize)
+                .collect();
+            let right: Vec<_> = right
+                .to_le_bits()
+                .iter()
+                .by_val()
+                .take(pallas::Base::NUM_BITS as usize)
+                .collect();
+
+            let mut message = l_star.to_vec();
+            message.extend_from_slice(&left);
+            message.extend_from_slice(&right);
+
+            node = domain.hash(message.into_iter()).unwrap();
+        }
+        node
+    }
+
+    pub struct MyCircuit {
+        pub leaf: Option<pallas::Base>,
+        pub leaf_pos: Option<u32>,
+        pub merkle_path: Option<[pallas::Base; MERKLE_DEPTH]>,
+    }
+
+    impl Default for MyCircuit {
+        fn default() -> Self {
+            MyCircuit {
+                leaf: None,
+                leaf_pos: None,
+                merkle_path: None,
+            }
+        }
     }
 
     impl Circuit<pallas::Base> for MyCircuit {
         type Config = (
-            MerkleConfig<OrchardHashDomains, OrchardCommitDomains, OrchardFixedBases>,
-            MerkleConfig<OrchardHashDomains, OrchardCommitDomains, OrchardFixedBases>,
+            MerkleConfig<Hash, Commit, FixedBase>,
+            MerkleConfig<Hash, Commit, FixedBase>,
         );
         type FloorPlanner = SimpleFloorPlanner;
 
         fn without_witnesses(&self) -> Self {
-            Self::default()
+            Self {
+                leaf: None,
+                leaf_pos: None,
+                merkle_path: None,
+            }
         }
 
         fn configure(meta: &mut ConstraintSystem<pallas::Base>) -> Self::Config {
@@ -239,7 +404,7 @@ pub mod tests {
             mut layouter: impl Layouter<pallas::Base>,
         ) -> Result<(), Error> {
             // Load generator table (shared across both configs)
-            SinsemillaChip::<OrchardHashDomains, OrchardCommitDomains, OrchardFixedBases>::load(
+            SinsemillaChip::<Hash, Commit, FixedBase>::load(
                 config.0.sinsemilla_config.clone(),
                 &mut layouter,
             )?;
@@ -257,7 +422,7 @@ pub mod tests {
             let path = MerklePath {
                 chip_1,
                 chip_2,
-                domain: OrchardHashDomains::MerkleCrh,
+                domain: Hash,
                 leaf_pos: self.leaf_pos,
                 path: self.merkle_path,
             };
@@ -267,15 +432,10 @@ pub mod tests {
 
             if let Some(leaf_pos) = self.leaf_pos {
                 // The expected final root
-                let final_root = {
-                    let path = tree::MerklePath::new(leaf_pos, self.merkle_path.unwrap());
-                    let leaf =
-                        ExtractedNoteCommitment::from_bytes(&self.leaf.unwrap().to_repr()).unwrap();
-                    path.root(leaf)
-                };
+                let final_root = root(self.merkle_path.unwrap(), leaf_pos, self.leaf.unwrap());
 
                 // Check the computed final root against the expected final root.
-                assert_eq!(computed_final_root.value().unwrap(), &final_root.inner());
+                assert_eq!(*computed_final_root.value().unwrap(), final_root);
             }
 
             Ok(())
@@ -284,6 +444,9 @@ pub mod tests {
 
     #[test]
     fn merkle_chip() {
+        use halo2::dev::MockProver;
+        use std::convert::TryInto;
+
         let mut rng = OsRng;
 
         // Choose a random leaf and position

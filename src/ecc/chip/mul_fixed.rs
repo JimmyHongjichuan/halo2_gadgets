@@ -21,6 +21,9 @@ use pasta_curves::{
 pub mod base_field_elem;
 pub mod full_width;
 pub mod short;
+pub mod util;
+
+pub use util::{compute_lagrange_coeffs, compute_window_table, find_zs_and_us};
 
 lazy_static! {
     static ref TWO_SCALAR: pallas::Scalar = pallas::Scalar::from(2);
@@ -485,5 +488,54 @@ impl ScalarFixed {
                 }
             })
             .collect::<Vec<_>>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ecc::{
+        chip::{EccChip, FixedPoint},
+        FixedPoints, NonIdentityPoint, Point,
+    };
+    use group::{ff::PrimeField, Curve};
+    use halo2::{circuit::Layouter, plonk::Error};
+    use pasta_curves::pallas;
+
+    pub(crate) fn constrain_equal_non_id_base<F: FixedPoints<pallas::Affine>>(
+        chip: EccChip<F>,
+        layouter: impl Layouter<pallas::Base>,
+        base_val: pallas::Affine,
+        scalar_val: pallas::Base,
+        result: Point<pallas::Affine, EccChip<F>>,
+    ) -> Result<(), Error>
+    where
+        <F as FixedPoints<pallas::Affine>>::Base: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::FullScalar: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::ShortScalar: FixedPoint<pallas::Affine>,
+    {
+        // Move scalar from base field into scalar field (which always fits for Pallas).
+        let scalar_val = pallas::Scalar::from_repr(scalar_val.to_repr()).unwrap();
+
+        constrain_equal_non_id(chip, layouter, base_val, scalar_val, result)
+    }
+
+    pub(crate) fn constrain_equal_non_id<F: FixedPoints<pallas::Affine>>(
+        chip: EccChip<F>,
+        mut layouter: impl Layouter<pallas::Base>,
+        base_val: pallas::Affine,
+        scalar_val: pallas::Scalar,
+        result: Point<pallas::Affine, EccChip<F>>,
+    ) -> Result<(), Error>
+    where
+        <F as FixedPoints<pallas::Affine>>::Base: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::FullScalar: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::ShortScalar: FixedPoint<pallas::Affine>,
+    {
+        let expected = NonIdentityPoint::new(
+            chip,
+            layouter.namespace(|| "expected point"),
+            Some((base_val * scalar_val).to_affine()),
+        )?;
+        result.constrain_equal(layouter.namespace(|| "constrain result"), &expected)
     }
 }

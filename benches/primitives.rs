@@ -1,11 +1,11 @@
 use std::array;
 
-use crate::primitives::{
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use group::ff::Field;
+use halo2_gadgets::primitives::{
     poseidon::{self, ConstantLength, P128Pow5T3},
     sinsemilla,
 };
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use ff::Field;
 
 use pasta_curves::pallas;
 #[cfg(unix)]

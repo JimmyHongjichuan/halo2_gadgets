@@ -217,7 +217,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
             use group::Curve;
 
             let scalar = &scalar
-                .base_field_elem()
+                .base_field_elem
                 .value()
                 .map(|scalar| pallas::Scalar::from_repr(scalar.to_repr()).unwrap());
             let real_mul = scalar.map(|scalar| base.generator() * scalar);
@@ -373,10 +373,7 @@ impl<Fixed: FixedPoints<pallas::Affine>> Config<Fixed> {
 
 #[cfg(test)]
 pub mod tests {
-    use group::{
-        ff::{Field, PrimeField},
-        Curve,
-    };
+    use group::{ff::Field, Curve, Group};
     use halo2::{
         circuit::{Chip, Layouter},
         plonk::Error,
@@ -384,55 +381,55 @@ pub mod tests {
     use pasta_curves::pallas;
     use rand::rngs::OsRng;
 
-    use crate::constants::{NullifierK, OrchardFixedBases};
-    use crate::{
-        ecc::{
-            chip::{EccChip, FixedPoint, H},
-            FixedPointBaseField, NonIdentityPoint, Point,
-        },
-        utilities::UtilitiesInstructions,
+    use super::super::tests::constrain_equal_non_id_base;
+    use crate::ecc::{
+        self,
+        chip::{EccChip, FixedPoint, H, NUM_WINDOWS},
+        FixedPointBaseField, FixedPoints,
     };
+    use crate::utilities::UtilitiesInstructions;
 
-    pub fn test_mul_fixed_base_field(
-        chip: EccChip<OrchardFixedBases>,
+    use lazy_static::lazy_static;
+
+    lazy_static! {
+        static ref BASE: pallas::Affine = pallas::Point::generator().to_affine();
+        static ref ZS_AND_US: Vec<(u64, [[u8; 32]; H])> =
+            ecc::chip::find_zs_and_us(*BASE, NUM_WINDOWS).unwrap();
+    }
+
+    pub fn test_mul_fixed_base_field<F: FixedPoints<pallas::Affine>>(
+        base: <F as FixedPoints<pallas::Affine>>::Base,
+        chip: EccChip<F>,
         mut layouter: impl Layouter<pallas::Base>,
-    ) -> Result<(), Error> {
-        // nullifier_k
+    ) -> Result<(), Error>
+    where
+        <F as FixedPoints<pallas::Affine>>::Base: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::FullScalar: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::ShortScalar: FixedPoint<pallas::Affine>,
+    {
         test_single_base(
             chip.clone(),
-            layouter.namespace(|| "nullifier_k"),
-            FixedPointBaseField::from_inner(chip, NullifierK),
-            NullifierK.generator(),
+            layouter.namespace(|| "fixed base"),
+            FixedPointBaseField::from_inner(chip, base.clone()),
+            base.generator(),
         )
     }
 
     #[allow(clippy::op_ref)]
-    fn test_single_base(
-        chip: EccChip<OrchardFixedBases>,
+    fn test_single_base<F: FixedPoints<pallas::Affine>>(
+        chip: EccChip<F>,
         mut layouter: impl Layouter<pallas::Base>,
-        base: FixedPointBaseField<pallas::Affine, EccChip<OrchardFixedBases>>,
+        base: FixedPointBaseField<pallas::Affine, EccChip<F>>,
         base_val: pallas::Affine,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        <F as FixedPoints<pallas::Affine>>::Base: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::FullScalar: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::ShortScalar: FixedPoint<pallas::Affine>,
+    {
         let rng = OsRng;
 
         let column = chip.config().advices[0];
-
-        fn constrain_equal_non_id(
-            chip: EccChip<OrchardFixedBases>,
-            mut layouter: impl Layouter<pallas::Base>,
-            base_val: pallas::Affine,
-            scalar_val: pallas::Base,
-            result: Point<pallas::Affine, EccChip<OrchardFixedBases>>,
-        ) -> Result<(), Error> {
-            // Move scalar from base field into scalar field (which always fits for Pallas).
-            let scalar = pallas::Scalar::from_repr(scalar_val.to_repr()).unwrap();
-            let expected = NonIdentityPoint::new(
-                chip,
-                layouter.namespace(|| "expected point"),
-                Some((base_val * scalar).to_affine()),
-            )?;
-            result.constrain_equal(layouter.namespace(|| "constrain result"), &expected)
-        }
 
         // [a]B
         {
@@ -445,7 +442,7 @@ pub mod tests {
                 )?;
                 base.mul(layouter.namespace(|| "random [a]B"), scalar_fixed)?
             };
-            constrain_equal_non_id(
+            constrain_equal_non_id_base(
                 chip.clone(),
                 layouter.namespace(|| "random [a]B"),
                 base_val,
@@ -473,7 +470,7 @@ pub mod tests {
                 )?;
                 base.mul(layouter.namespace(|| "mul with double"), scalar_fixed)?
             };
-            constrain_equal_non_id(
+            constrain_equal_non_id_base(
                 chip.clone(),
                 layouter.namespace(|| "mul with double"),
                 base_val,
@@ -504,7 +501,7 @@ pub mod tests {
                     chip.load_private(layouter.namespace(|| "-1"), column, Some(scalar_fixed))?;
                 base.mul(layouter.namespace(|| "mul by -1"), scalar_fixed)?
             };
-            constrain_equal_non_id(
+            constrain_equal_non_id_base(
                 chip,
                 layouter.namespace(|| "mul by -1"),
                 base_val,

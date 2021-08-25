@@ -463,7 +463,7 @@ fn decompose_for_scalar_mul(scalar: Option<&pallas::Base>) -> Vec<Option<bool>> 
 pub mod tests {
     use group::{
         ff::{Field, PrimeField},
-        Curve,
+        Curve, Group,
     };
     use halo2::{
         circuit::{Chip, Layouter},
@@ -472,34 +472,34 @@ pub mod tests {
     use pasta_curves::pallas;
     use rand::rngs::OsRng;
 
-    use crate::constants::OrchardFixedBases;
-    use crate::{
-        ecc::{
-            chip::{EccChip, EccPoint},
-            EccInstructions, NonIdentityPoint, Point,
-        },
-        utilities::UtilitiesInstructions,
+    use crate::ecc::{
+        chip::{EccChip, FixedPoint},
+        FixedPoints, NonIdentityPoint, Point,
     };
+    use crate::utilities::UtilitiesInstructions;
 
-    pub fn test_mul(
-        chip: EccChip<OrchardFixedBases>,
+    pub fn test_mul<F: FixedPoints<pallas::Affine>>(
+        chip: EccChip<F>,
         mut layouter: impl Layouter<pallas::Base>,
-        p: &NonIdentityPoint<pallas::Affine, EccChip<OrchardFixedBases>>,
-        p_val: pallas::Affine,
-    ) -> Result<(), Error> {
-        let column = chip.config().advices[0];
-
-        fn constrain_equal_non_id<
-            EccChip: EccInstructions<pallas::Affine, Point = EccPoint> + Clone + Eq + std::fmt::Debug,
-        >(
-            chip: EccChip,
+    ) -> Result<(), Error>
+    where
+        <F as FixedPoints<pallas::Affine>>::Base: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::FullScalar: FixedPoint<pallas::Affine>,
+        <F as FixedPoints<pallas::Affine>>::ShortScalar: FixedPoint<pallas::Affine>,
+    {
+        fn constrain_equal_non_id<F: FixedPoints<pallas::Affine>>(
+            chip: EccChip<F>,
             mut layouter: impl Layouter<pallas::Base>,
             base_val: pallas::Affine,
             scalar_val: pallas::Base,
-            result: Point<pallas::Affine, EccChip>,
-        ) -> Result<(), Error> {
-            // Move scalar from base field into scalar field (which always fits
-            // for Pallas).
+            result: Point<pallas::Affine, EccChip<F>>,
+        ) -> Result<(), Error>
+        where
+            <F as FixedPoints<pallas::Affine>>::Base: FixedPoint<pallas::Affine>,
+            <F as FixedPoints<pallas::Affine>>::FullScalar: FixedPoint<pallas::Affine>,
+            <F as FixedPoints<pallas::Affine>>::ShortScalar: FixedPoint<pallas::Affine>,
+        {
+            // Move scalar from base field into scalar field (which always fits for Pallas).
             let scalar = pallas::Scalar::from_repr(scalar_val.to_repr()).unwrap();
             let expected = NonIdentityPoint::new(
                 chip,
@@ -508,6 +508,12 @@ pub mod tests {
             )?;
             result.constrain_equal(layouter.namespace(|| "constrain result"), &expected)
         }
+
+        // Generate a random point P
+        let p_val = pallas::Point::random(rand::rngs::OsRng).to_affine(); // P
+        let p = NonIdentityPoint::new(chip.clone(), layouter.namespace(|| "P"), Some(p_val))?;
+
+        let column = chip.config().advices[0];
 
         // [a]B
         {

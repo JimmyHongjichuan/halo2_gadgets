@@ -11,7 +11,7 @@ use halo2::{
 };
 use pasta_curves::{pallas, vesta};
 
-use crate::{
+use halo2_gadgets::{
     poseidon::{Hash, Pow5Chip, Pow5Config},
     primitives::poseidon::{self, ConstantLength, Spec},
 };

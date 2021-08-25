@@ -34,6 +34,12 @@ pub struct Pow5Config<F: FieldExt, const WIDTH: usize, const RATE: usize> {
     m_inv: Mds<F, WIDTH>,
 }
 
+impl<F: FieldExt, const WIDTH: usize, const RATE: usize> Pow5Config<F, WIDTH, RATE> {
+    pub fn state(&self) -> [Column<Advice>; WIDTH] {
+        self.state
+    }
+}
+
 /// A Poseidon chip using an $x^5$ S-Box.
 ///
 /// The chip is implemented using a single round per row for full rounds, and two rounds
