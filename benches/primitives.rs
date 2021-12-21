@@ -1,11 +1,11 @@
 use std::array;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use ff::Field;
-use orchard::primitives::{
+use crate::primitives::{
     poseidon::{self, ConstantLength, P128Pow5T3},
     sinsemilla,
 };
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use ff::Field;
 
 use pasta_curves::pallas;
 #[cfg(unix)]

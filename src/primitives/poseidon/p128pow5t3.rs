@@ -82,12 +82,6 @@ mod tests {
     #[derive(Debug)]
     pub struct P128Pow5T3Gen<F: FieldExt, const SECURE_MDS: usize>(PhantomData<F>);
 
-    impl<F: FieldExt, const SECURE_MDS: usize> P128Pow5T3Gen<F, SECURE_MDS> {
-        pub fn new() -> Self {
-            P128Pow5T3Gen(PhantomData::default())
-        }
-    }
-
     impl<F: FieldExt, const SECURE_MDS: usize> Spec<F, 3, 2> for P128Pow5T3Gen<F, SECURE_MDS> {
         fn full_rounds() -> usize {
             8

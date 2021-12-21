@@ -11,8 +11,8 @@ use halo2::{
 };
 use pasta_curves::{pallas, vesta};
 
-use orchard::{
-    circuit::gadget::poseidon::{Hash, Pow5Chip, Pow5Config},
+use crate::{
+    poseidon::{Hash, Pow5Chip, Pow5Config},
     primitives::poseidon::{self, ConstantLength, Spec},
 };
 use std::convert::TryInto;
